@@ -7,7 +7,7 @@ Layout matches reference: left panel | terminal | right panel
 """
 
 import pygame
-import os, pty, select, signal, socket, math, time, threading, collections, configparser
+import os, pty, select, signal, socket, math, time, threading, collections, configparser, random
 import psutil
 from datetime import datetime
 from pathlib import Path
@@ -81,6 +81,26 @@ def hrule(surf, x, y, w, color=None):
 
 def vrule(surf, x, y, h, color=None):
     pygame.draw.line(surf, color or CBRD, (x,y), (x,y+h), 1)
+
+def glow_blit(surf, txt, font, color, x, y, anchor='tl'):
+    """Draw text with 3-layer phosphor glow."""
+    halo = tuple(min(255, c // 3) for c in color)
+    blit(surf, txt, font, halo, x-1, y-1, anchor)
+    blit(surf, txt, font, halo, x+1, y+1, anchor)
+    mid = tuple(min(255, c * 2 // 3) for c in color)
+    blit(surf, txt, font, mid, x, y, anchor)
+    blit(surf, txt, font, color, x, y, anchor)
+
+def corner_brackets(surf, x, y, w, h, color, size=12):
+    """Draw sci-fi HUD corner brackets."""
+    pygame.draw.line(surf, color, (x, y),       (x+size, y),       2)
+    pygame.draw.line(surf, color, (x, y),       (x, y+size),       2)
+    pygame.draw.line(surf, color, (x+w, y),     (x+w-size, y),     2)
+    pygame.draw.line(surf, color, (x+w, y),     (x+w, y+size),     2)
+    pygame.draw.line(surf, color, (x, y+h),     (x+size, y+h),     2)
+    pygame.draw.line(surf, color, (x, y+h),     (x, y+h-size),     2)
+    pygame.draw.line(surf, color, (x+w, y+h),   (x+w-size, y+h),   2)
+    pygame.draw.line(surf, color, (x+w, y+h),   (x+w, y+h-size),   2)
 
 def bar(surf, x, y, w, h, pct, color=None):
     pygame.draw.rect(surf, (20,35,40), pygame.Rect(x,y,w,h))
@@ -526,6 +546,35 @@ class Globe:
             p=int(2+2*abs(math.sin(time.time()*2)))
             pygame.draw.circle(surf,CWRN,(x,y),p+2)
             pygame.draw.circle(surf,CWRN,(x,y),2)
+        # Mesh network arcs — animated connection lines between fake nodes
+        MESH_NODES = [
+            (32.2,-110.9),(40.7,-74.0),(51.5,-0.1),(48.9,2.4),
+            (35.7,139.7),(-33.9,151.2),(28.6,77.2),(-19.0,47.0),
+        ]
+        arc_pairs = [(0,1),(1,2),(2,3),(4,5),(6,7),(0,6),(3,4)]
+        for ai,(ni,nj) in enumerate(arc_pairs):
+            lat1,lon1 = MESH_NODES[ni]
+            lat2,lon2 = MESH_NODES[nj]
+            x1,y1,v1 = self.proj(lat1,lon1,cx,cy,r)
+            x2,y2,v2 = self.proj(lat2,lon2,cx,cy,r)
+            if v1 and v2:
+                # Draw bezier arc
+                mx = (x1+x2)//2
+                my = min(y1,y2) - r//3
+                pts = []
+                for t in range(0,21):
+                    tf = t/20.0
+                    bx = int((1-tf)**2*x1 + 2*(1-tf)*tf*mx + tf**2*x2)
+                    by = int((1-tf)**2*y1 + 2*(1-tf)*tf*my + tf**2*y2)
+                    pts.append((bx,by))
+                if len(pts)>1:
+                    pygame.draw.lines(surf,(20,50,55),False,pts,1)
+                # Traveling packet dot
+                t = (time.time()*0.4 + ai*0.3) % 1.0
+                tf = t
+                bx = int((1-tf)**2*x1 + 2*(1-tf)*tf*mx + tf**2*x2)
+                by = int((1-tf)**2*y1 + 2*(1-tf)*tf*my + tf**2*y2)
+                pygame.draw.circle(surf,C,(bx,by),2)
 
 # ─── KEYBOARD ────────────────────────────────────────────────────────────────
 # Laptop keyboard layout matching standard diagram
@@ -738,6 +787,43 @@ def main():
     for yy in range(0,H,3):
         pygame.draw.line(scan,(0,0,0,12),(0,yy),(W,yy))
 
+    # Vignette — pre-compute CRT lens darkening
+    vignette=pygame.Surface((W,H),pygame.SRCALPHA)
+    cx_v, cy_v = W//2, H//2
+    max_d = math.sqrt(cx_v**2 + cy_v**2)
+    for vx in range(0, W, 4):
+        for vy in range(0, H, 4):
+            dx = (vx - cx_v) / cx_v
+            dy = (vy - cy_v) / cy_v
+            d = min(1.0, (dx*dx + dy*dy) ** 0.5)
+            alpha = int(d * d * 90)
+            pygame.draw.rect(vignette, (0,0,0,alpha), (vx, vy, 4, 4))
+
+    # Boot sequence animation
+    boot_lines = [
+        "MESHDEX v2 :: SYSTEM CHECK",
+        "[████████████████████] 100%",
+        "MEMORY: 512MB OK",
+        "PTY: 5 SESSIONS OK",
+        "NET: ONLINE",
+        ">>> READY",
+    ]
+    boot_t0 = time.time()
+    while time.time() - boot_t0 < 2.0:
+        screen.fill(BG)
+        elapsed = time.time() - boot_t0
+        lines_shown = min(len(boot_lines), int(elapsed * 3.5) + 1)
+        for bi, bl in enumerate(boot_lines[:lines_shown]):
+            bcol = CGOOD if bi == len(boot_lines)-1 else C
+            glow_blit(screen, bl, f9b, bcol, 20, 20 + bi*22)
+        # Progress bar animation
+        if elapsed < 1.2:
+            pct = min(100, int(elapsed / 1.2 * 100))
+            bar(screen, 20, 20 + 22, 200, 8, pct, C)
+        pygame.display.flip()
+        pygame.time.wait(50)
+    screen.fill(BG)
+
     input_buf=''; frame=0; running=True
     tab_rects=[]  # populated each frame for click detection
 
@@ -828,17 +914,32 @@ def main():
         hrule(screen,W-KB_W,H-FS_H,KB_W)     # keyboard top border (same as filesystem)
         vrule(screen,W-KB_W,H-FS_H,FS_H)     # between filesystem and keyboard
 
+        # Chromatic aberration on panel dividers
+        pygame.draw.line(screen,(40,0,0),(LEFT_W+1,0),(LEFT_W+1,H-FS_H),1)
+        pygame.draw.line(screen,(0,0,40),(LEFT_W-1,0),(LEFT_W-1,H-FS_H),1)
+        pygame.draw.line(screen,(40,0,0),(LEFT_W+TERM_W+1,0),(LEFT_W+TERM_W+1,H-FS_H),1)
+        pygame.draw.line(screen,(0,0,40),(LEFT_W+TERM_W-1,0),(LEFT_W+TERM_W-1,H-FS_H),1)
+
+        # HUD corner brackets on all panels
+        corner_brackets(screen, 0, 0, LEFT_W, H-FS_H, CBRD, 14)
+        corner_brackets(screen, LEFT_W, 0, TERM_W, H-FS_H, CBRD, 14)
+        corner_brackets(screen, LEFT_W+TERM_W, 0, RIGHT_W, H-FS_H, CBRD, 14)
+        corner_brackets(screen, 0, H-FS_H, W-KB_W, FS_H, CBRD, 10)
+
         # ══ LEFT PANEL ══════════════════════════════════════════════════
         lx=0; ly=0; lw=LEFT_W
 
         pygame.draw.rect(screen,BG2,pygame.Rect(0,0,lw,HDR_H))
         hrule(screen,0,HDR_H,lw)
+        # Animated hex data stream in header
+        hex_stream=''.join(f'{random.randint(0,255):02x}' for _ in range(12))
+        blit(screen,hex_stream,f7,(20,40,40),8,5)
         blit(screen,"PANEL",f9b,C,8,5)
         blit(screen,"SYSTEM",f9b,CDM,lw-8,5,'tr')
         ly=HDR_H+8
 
         # Clock
-        blit(screen,now.strftime("%H:%M:%S"),f32b,C,lw//2,ly,'tc')
+        glow_blit(screen,now.strftime("%H:%M:%S"),f32b,C,lw//2,ly,'tc')
         ly+=40
 
         # Date row
@@ -868,7 +969,7 @@ def main():
         cpu_hist=s.get('cpu_hist',collections.deque([0]*60))
         draw_wave(screen,wr,cpu_hist,C,100)
         cpu=s.get('cpu',0)
-        blit(screen,f"Avg. {cpu:.0f}%",f8,C,8,ly+wh+2)
+        glow_blit(screen,f"Avg. {cpu:.0f}%",f8,C,8,ly+wh+2)
         ly+=wh+16
 
         # CPU waveform #2 (dimmed, simulates second core group)
@@ -933,6 +1034,8 @@ def main():
 
         pygame.draw.rect(screen,BG2,pygame.Rect(tx,0,tw,HDR_H))
         hrule(screen,tx,HDR_H,tw)
+        hex_stream2=''.join(f'{random.randint(0,255):02x}' for _ in range(16))
+        blit(screen,hex_stream2,f7,(20,40,40),tx+8,5)
         blit(screen,"TERMINAL",f9b,C,tx+8,5)
 
         # Tabs
@@ -961,6 +1064,10 @@ def main():
         term_inner = pygame.Rect(tx+2, HDR_H+2, tw-4, tbot-HDR_H-4)
         term_content = pygame.Rect(term_start_x, term_start_y, exact_w, exact_h)
         pygame.draw.rect(screen, BG3, term_inner)
+        # Terminal pane pulsing glow border
+        glow_alpha = int(128 + 64 * math.sin(frame * 0.1))
+        glow_col = (glow_alpha // 4, glow_alpha, glow_alpha)
+        pygame.draw.rect(screen, glow_col, term_inner, 2)
         try:
             scr,cur_x,cur_y=term().get_screen()
             blink_on=(frame//6)%2==0
@@ -1038,6 +1145,8 @@ def main():
 
         pygame.draw.rect(screen,BG2,pygame.Rect(rx,0,rw,HDR_H))
         hrule(screen,rx,HDR_H,rw)
+        hex_stream3=''.join(f'{random.randint(0,255):02x}' for _ in range(12))
+        blit(screen,hex_stream3,f7,(20,40,40),rx+8,5)
         blit(screen,"PANEL",f9b,CDM,rx+8,5)
         blit(screen,"NETWORK",f9b,C,rx+rw-8,5,'tr')
         ry=HDR_H+6
@@ -1054,7 +1163,7 @@ def main():
         blit(screen,"PING",f8,CDM,rx+165,ry)
         ry+=10
         sc=CGOOD if iinfo.get('up') else CDAN
-        blit(screen,"ONLINE" if iinfo.get('up') else "OFFLINE",f9b,sc,rx+8,ry)
+        glow_blit(screen,"ONLINE" if iinfo.get('up') else "OFFLINE",f9b,sc,rx+8,ry)
         blit(screen,iinfo.get('ip','--'),f8,C,rx+75,ry)
         blit(screen,"--ms",f8,CDM,rx+165,ry)
         ry+=18; hrule(screen,rx,ry,rw); ry+=6
@@ -1139,6 +1248,15 @@ def main():
 
         # Scanlines
         screen.blit(scan,(0,0))
+        # Vignette — CRT lens darkening
+        screen.blit(vignette,(0,0))
+        # Occasional glitch strip
+        if frame % 300 == 0:
+            gy = random.randint(0, H-20)
+            gh2 = random.randint(2, 15)
+            gx2 = random.randint(-8, 8)
+            strip = screen.subsurface((0, gy, W, gh2))
+            screen.blit(strip, (gx2, gy))
         pygame.display.flip()
         clock.tick(FPS)
 
